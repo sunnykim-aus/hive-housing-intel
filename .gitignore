@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Local data — too large / not for cloud
+data/
+chroma/
+chroma_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated Word docs
+*.docx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
