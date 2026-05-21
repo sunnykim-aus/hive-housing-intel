@@ -463,7 +463,7 @@ if page == "Home":
     </div>
     """, unsafe_allow_html=True)
 
-    if count == 0:
+    if count == 0 and _SEARCH_AVAILABLE:
         if st.button("Run All Sources — Index Reports", type="primary", key="home_pipeline"):
             with st.spinner("Crawling all sources and indexing reports (15–30 min)..."):
                 try:
