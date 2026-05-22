@@ -238,25 +238,25 @@ h1, h2, h3, h4 { color: #ffffff !important; }
 # ── Navigation (session state) ────────────────────────────────────────────────
 
 PAGES = [
-    "Home",
-    "Live Dashboard",
-    "State Demand & Supply",
-    "Population & Supply Gap",
+    "About HIVE",
+    "Live Housing Dashboard",
+    "Housing Demand & Supply",
+    "Population & Migration",
     "Housing Conditions & Costs",
     "HAFF Investment Tracker",
 ]
 
 PAGE_SHORT = {
-    "Home": "Home",
-    "Live Dashboard": "Live Dashboard",
-    "State Demand & Supply": "Demand & Supply",
-    "Population & Supply Gap": "Population",
+    "About HIVE": "About HIVE",
+    "Live Housing Dashboard": "Live Dashboard",
+    "Housing Demand & Supply": "Demand & Supply",
+    "Population & Migration": "Population",
     "Housing Conditions & Costs": "Conditions",
-    "HAFF Investment Tracker": "HAFF",
+    "HAFF Investment Tracker": "Future Fund",
 }
 
 if "page" not in st.session_state:
-    st.session_state["page"] = "Home"
+    st.session_state["page"] = "About HIVE"
 
 page = st.session_state["page"]
 
@@ -267,7 +267,7 @@ st.markdown("""
 <div style="display:flex;align-items:center;justify-content:space-between;
             padding:10px 0 8px 0;border-bottom:1px solid #2a2a3e;margin-bottom:10px;">
     <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:1.3em;font-weight:900;color:#f6c90e;letter-spacing:0.5px;">🐝 HIVE Data</span>
+        <span style="font-size:1.3em;font-weight:900;color:#f6c90e;letter-spacing:0.5px;">🐝 HIVE</span>
         <span style="font-size:0.8em;color:#888;font-weight:400;">Housing Intelligence &amp; Evidence</span>
     </div>
     <a href="https://www.linkedin.com/in/sunny-kim-58a780100/" target="_blank"
@@ -310,7 +310,7 @@ n_reports = len(META_FILE.read_text().splitlines()) if META_FILE.exists() else 0
 
 # ── Home ──────────────────────────────────────────────────────────────────────
 
-if page == "Home":
+if page == "About HIVE":
 
     # ── Hero ──────────────────────────────────────────────────────────────────
     st.markdown(
@@ -606,22 +606,22 @@ if page == "Home":
         {
             "nav":   "Live Dashboard",
             "icon":  "📡",
-            "title": "Live Market Intelligence",
-            "body":  "Real-time ABS building approvals, the AIHW homelessness funnel, and state waitlist trends — updated monthly. Not just total approvals, but what portion is accessible to people on the waitlist.",
+            "title": "Live Housing Dashboard",
+            "body":  "ABS building approvals, the AIHW homelessness funnel, and state social housing waitlists — curated from the latest official publications. The supply gap vs Accord target, with state-by-state breakdown.",
             "new":   False,
         },
         {
             "nav":   "Demand & Supply",
             "icon":  "⚖️",
-            "title": "State Demand & Supply",
+            "title": "Housing Demand & Supply",
             "body":  "Who is on the waitlist by state, what household type, what is being built, and the structural mismatch between supply and need. 20 years of waitlist trend and a full state spotlight table.",
             "new":   False,
         },
         {
             "nav":   "Population",
             "icon":  "📈",
-            "title": "Population & Supply Gap",
-            "body":  "10 years of actual population history, the COVID migration shock (−84k to +518k NOM), state-by-state vacancy and rent impact, ABS projections to 2044, implied dwelling demand, and evidence-based policy advocacy positions.",
+            "title": "Population & Migration",
+            "body":  "10 years of population history, the COVID migration shock (−84k to +518k NOM), state-by-state vacancy and rent impact, ABS projections to 2044, implied dwelling demand, and evidence-based advocacy positions.",
             "new":   True,
         },
         {
@@ -632,7 +632,7 @@ if page == "Home":
             "new":   True,
         },
         {
-            "nav":   "HAFF",
+            "nav":   "Future Fund",
             "icon":  "🏗️",
             "title": "HAFF Investment Tracker",
             "body":  "Round-by-round breakdown of the $10B Housing Australia Future Fund — homes announced vs 30,000 target, state allocations, sector mix, bedroom mix, delivery pipeline, and funding gap analysis.",
@@ -675,37 +675,37 @@ if page == "Home":
             "title": "CEO / Executive Director",
             "sub": "CHP or peak body",
             "body": "Start with the <strong>Live Dashboard</strong> for current national numbers, then <strong>Population</strong> for the 10-year growth story and what it means for housing demand. <strong>HAFF</strong> shows what the government has committed and what's been delivered.",
-            "tabs": ["Live Dashboard", "Population", "HAFF", "Conditions"],
+            "tabs": ["Live Dashboard", "Population", "Future Fund", "Conditions"],
         },
         {
             "title": "Policy & Advocacy Manager",
             "sub": "CHP, peak body, or government",
             "body": "<strong>Population</strong> has six evidence-backed advocacy positions the sector needs. <strong>Conditions</strong> makes the case for grant indexation and maintenance investment. <strong>Demand & Supply</strong> shows the structural mismatch in hard numbers.",
-            "tabs": ["Population", "Conditions", "Demand & Supply", "HAFF"],
+            "tabs": ["Population", "Conditions", "Demand & Supply", "Future Fund"],
         },
         {
             "title": "Development Manager",
             "sub": "Property and pipeline, CHP",
             "body": "<strong>Demand & Supply</strong> is your demand case — waitlist demographics vs bedroom mix vs what's being built. <strong>Population</strong> shows projected demand by state to 2044. <strong>Conditions</strong> gives you the construction cost story and why HAFF grants have a funding gap. <strong>HAFF</strong> shows the pipeline you're competing in.",
-            "tabs": ["Demand & Supply", "Population", "Conditions", "HAFF"],
+            "tabs": ["Demand & Supply", "Population", "Conditions", "Future Fund"],
         },
         {
             "title": "Grants & Funding Officer",
             "sub": "CHP or community organisation",
             "body": "<strong>Population</strong>'s state growth data gives you the forward demand story. <strong>Demand & Supply</strong> shows waitlist demographics by state and household type — the evidence for your bid. <strong>Live Dashboard</strong> has the latest homelessness and approval data.",
-            "tabs": ["Population", "Demand & Supply", "Live Dashboard", "Conditions"],
+            "tabs": ["Population", "Demand & Supply", "Live Dashboard", "Future Fund"],
         },
         {
             "title": "Impact Investor / Funder",
             "sub": "Super funds, banks, philanthropies",
             "body": "<strong>HAFF</strong> shows what government committed vs delivered. <strong>Population</strong> shows the scale of unmet demand (32.5M Australians by 2041). <strong>Conditions</strong> shows why the $1B that built 3,226 homes in 2019 only builds 1,786 today — and why that makes the investment case stronger.",
-            "tabs": ["HAFF", "Population", "Conditions", "Demand & Supply"],
+            "tabs": ["Future Fund", "Population", "Conditions", "Demand & Supply"],
         },
         {
             "title": "Government Stakeholder",
             "sub": "State/federal housing departments",
             "body": "<strong>Population</strong> shows the structural gap between projected demand and any credible supply trajectory. <strong>Conditions</strong> makes the asset renewal case. <strong>HAFF</strong> tracks fund performance round by round. <strong>Live Dashboard</strong> provides the latest approval and waitlist data.",
-            "tabs": ["Population", "Conditions", "HAFF", "Live Dashboard"],
+            "tabs": ["Population", "Conditions", "Future Fund", "Live Dashboard"],
         },
     ]
 
@@ -1206,7 +1206,7 @@ if page == "HAFF Investment Tracker":
 
 # ── Ask the Research ──────────────────────────────────────────────────────────
 
-if page == "Live Dashboard":
+if page == "Live Housing Dashboard":
     st.markdown("## Live Housing Dashboard")
     st.caption("Key indicators from ABS Building Approvals, AIHW Specialist Homelessness Services, and state housing registers. Data as at latest published release.")
 
@@ -1638,7 +1638,7 @@ if page == "Live Dashboard":
 
 # ── State Demand & Supply ─────────────────────────────────────────────────────
 
-if page == "State Demand & Supply":
+if page == "Housing Demand & Supply":
     from live.state_analysis import (
         get_state_summary, get_all_states_latest,
         WAITLIST_TREND, APPROVALS_BY_TYPE, WAITLIST_DEMOGRAPHICS,
@@ -2132,7 +2132,7 @@ if page == "State Demand & Supply":
 
 # ── Population & Supply Gap ───────────────────────────────────────────────────
 
-if page == "Population & Supply Gap":
+if page == "Population & Migration":
     from live.population_data import (
         NATIONAL_PROJECTIONS, STATE_PROJECTIONS, GROWTH_DRIVERS,
         POLICY_ADVOCACY, ACCORD_TARGET, CURRENT_ANNUAL_APPROVALS,
