@@ -3,8 +3,12 @@ Uses Claude to synthesize a research-quality answer from retrieved chunks.
 The prompt is tuned for Australian housing policy analysis.
 """
 import os
+from pathlib import Path
 import anthropic
+from dotenv import load_dotenv
 from config import CLAUDE_MODEL
+
+load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
 _client = None
 

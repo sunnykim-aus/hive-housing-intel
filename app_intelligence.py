@@ -1,7 +1,7 @@
 """
-HIVE Data — Housing Intelligence & Evidence
-Live data dashboards for Australian community housing.
-No API key required — powered by ABS, AIHW, Treasury, and Housing Australia data.
+HIVE Intelligence — Housing Intelligence & Evidence
+AI-powered research synthesis platform for Australian community housing.
+Requires: Anthropic API key + indexed report pipeline (chromadb + sentence-transformers).
 """
 import os
 import sys
@@ -11,19 +11,70 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Support both local .env and Streamlit Cloud st.secrets for API key
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    try:
+        import streamlit as _st_tmp
+        _key = _st_tmp.secrets.get("ANTHROPIC_API_KEY", "")
+        if _key:
+            os.environ["ANTHROPIC_API_KEY"] = _key
+    except Exception:
+        pass
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
 
-from config import META_FILE, POLICY_TIMELINE
+from config import META_FILE, POLICY_TIMELINE, CHROMA_DIR, CLAUDE_MODEL
+
+# Heavy ML/search dependencies — optional (not available on Streamlit Community Cloud)
+_SEARCH_AVAILABLE = False
+try:
+    from search.retriever import search
+    from search.synthesizer import synthesize, synthesize_policy_impact
+    from ledger.db import init_db, get_all_programs, get_program
+    from ledger.seeder import seed as seed_ledger
+    from export.word import build_research_doc, build_impact_doc
+    _SEARCH_AVAILABLE = True
+except Exception:
+    search = synthesize = synthesize_policy_impact = None
+    init_db = get_all_programs = get_program = seed_ledger = None
+    build_research_doc = build_impact_doc = None
+
+
+def ai_insight(prompt: str, cache_key: str, max_tokens: int = 120) -> str:
+    """Call Claude for a contextual insight, cached in session_state for the session."""
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        r = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = r.content[0].text.strip()
+        st.session_state[cache_key] = text
+        return text
+    except Exception:
+        return ""
 
 
 def show_insight(prompt: str, cache_key: str, max_tokens: int = 120):
-    """No-op stub — AI insights are available in HIVE Intelligence (premium tier)."""
-    pass
-
+    """Render a Claude insight callout box. Shows a button if not yet generated."""
+    if cache_key in st.session_state:
+        st.info(f"**AI Insight** — {st.session_state[cache_key]}", icon="🤖")
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        if st.button("Get AI Insight", key=f"btn_{cache_key}", use_container_width=False):
+            with st.spinner("Analysing..."):
+                text = ai_insight(prompt, cache_key, max_tokens)
+            if text:
+                st.info(f"**AI Insight** — {text}", icon="🤖")
 
 def render_references(sources: list):
     """Render a styled references & methodology table at the bottom of an analysis page."""
@@ -86,7 +137,7 @@ def render_references(sources: list):
 
 
 st.set_page_config(
-    page_title="HIVE Data — Housing Intelligence & Evidence",
+    page_title="HIVE Intelligence — Research & Policy Analysis",
     page_icon="🐝",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -244,6 +295,12 @@ PAGES = [
     "Population & Supply Gap",
     "Housing Conditions & Costs",
     "HAFF Investment Tracker",
+    "Ask the Research",
+    "Policy Impact",
+    "Outcome Ledger",
+    "Policy Timeline",
+    "Browse Reports",
+    "Weekly Digest",
 ]
 
 PAGE_SHORT = {
@@ -253,6 +310,12 @@ PAGE_SHORT = {
     "Population & Supply Gap": "Population",
     "Housing Conditions & Costs": "Conditions",
     "HAFF Investment Tracker": "HAFF",
+    "Ask the Research": "Ask Research",
+    "Policy Impact": "Policy Impact",
+    "Outcome Ledger": "Outcomes",
+    "Policy Timeline": "Timeline",
+    "Browse Reports": "Reports",
+    "Weekly Digest": "Digest",
 }
 
 if "page" not in st.session_state:
@@ -302,8 +365,33 @@ if _selected and _selected != page:
     st.rerun()
 page = st.session_state["page"]
 
-# ── Report count (metadata only — no pipeline dependency) ─────────────────────
-n_reports = len(META_FILE.read_text().splitlines()) if META_FILE.exists() else 0
+# ── Index stats ───────────────────────────────────────────────────────────────
+try:
+    from pipeline.ingest import get_collection
+    col = get_collection()
+    count = col.count()
+    if META_FILE.exists():
+        n_reports = len(META_FILE.read_text().splitlines())
+    else:
+        n_reports = 0
+except Exception:
+    count = 0
+    n_reports = 0
+
+# Pipeline banner — only show on non-Home pages when empty
+if count == 0 and page != "Home":
+    st.warning("No reports indexed yet. Go to **Home** to run the data pipeline.", icon="⚠️")
+
+# Search filter defaults (used by Ask the Research page inline)
+year_range = (2005, 2025)
+n_sources = 15
+
+
+# ── Seed ledger ───────────────────────────────────────────────────────────────
+try:
+    seed_ledger(force=False)
+except Exception:
+    pass
 
 # ── Page routing ──────────────────────────────────────────────────────────────
 
@@ -324,58 +412,70 @@ if page == "Home":
 'Housing Intelligence<br>&amp; Evidence'
 '</div>'
 '<div style="font-size:1em;color:#c0c0c0;max-width:640px;line-height:1.8;margin-bottom:28px;">'
-'Live government data. 10 years of population history. Real-time dashboards. '
+'681 indexed reports. Live government data. 10 years of population history. AI-powered synthesis. '
 'Built for the people making the case for community housing investment in Australia.'
 '</div>'
 '<div style="display:flex;gap:10px;flex-wrap:wrap;">'
-'<div style="background:rgba(246,201,14,0.15);border:1px solid rgba(246,201,14,0.3);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#f6c90e;font-weight:600;">Live Data Dashboards</div>'
+'<div style="background:rgba(246,201,14,0.15);border:1px solid rgba(246,201,14,0.3);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#f6c90e;font-weight:600;">681 Reports Indexed</div>'
 '<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#ccc;">ABS · AHURI · AIHW · Treasury</div>'
 '<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#ccc;">Population Projections to 2044</div>'
 '<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#ccc;">Construction Cost Crisis</div>'
-'<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#ccc;">HAFF Investment Tracker</div>'
+'<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 16px;font-size:0.78em;color:#ccc;">AI Synthesis · Word Export</div>'
 '</div>'
 '</div>',
         unsafe_allow_html=True,
     )
 
-    # ── Platform stats ────────────────────────────────────────────────────────
-    st.markdown("""
+    # ── Data Pipeline status ─────────────────────────────────────────────────
+    _status_color = "#27ae60" if count > 0 else "#e67e22"
+    _status_label = "Live &amp; Indexed" if count > 0 else "Not Yet Indexed"
+    _status_dot = "●"
+    st.markdown(f"""
     <div style="background:linear-gradient(135deg,#13131f,#1a1a2e);
                 border:1px solid #2a2a4e;border-radius:12px;
-                padding:20px 28px;margin:16px 0 24px 0;">
-        <div style="display:flex;gap:40px;align-items:center;flex-wrap:wrap;">
+                padding:20px 28px;margin:16px 0 24px 0;
+                display:flex;align-items:center;gap:0;">
+        <div style="flex:1;display:flex;gap:40px;align-items:center;">
             <div>
                 <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px;
-                            color:#666;margin-bottom:4px;">Live Data Sources</div>
-                <div style="font-size:2em;font-weight:800;color:#fff;line-height:1;">8</div>
+                            color:#666;margin-bottom:4px;">Reports Indexed</div>
+                <div style="font-size:2em;font-weight:800;color:#fff;line-height:1;">{n_reports:,}</div>
                 <div style="font-size:0.78em;color:#888;margin-top:4px;">AHURI · ABS · AIHW · Treasury</div>
             </div>
             <div style="width:1px;height:48px;background:#2a2a4e;"></div>
             <div>
                 <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px;
-                            color:#666;margin-bottom:4px;">Population History</div>
-                <div style="font-size:2em;font-weight:800;color:#fff;line-height:1;">10 yrs</div>
-                <div style="font-size:0.78em;color:#888;margin-top:4px;">ABS NOM series 2014–2024</div>
+                            color:#666;margin-bottom:4px;">Searchable Chunks</div>
+                <div style="font-size:2em;font-weight:800;color:#fff;line-height:1;">{count:,}</div>
+                <div style="font-size:0.78em;color:#888;margin-top:4px;">Vector embeddings ready</div>
             </div>
             <div style="width:1px;height:48px;background:#2a2a4e;"></div>
             <div>
                 <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px;
-                            color:#666;margin-bottom:4px;">Projections to</div>
-                <div style="font-size:2em;font-weight:800;color:#f6c90e;line-height:1;">2044</div>
-                <div style="font-size:0.78em;color:#888;margin-top:4px;">ABS Series B state projections</div>
-            </div>
-            <div style="width:1px;height:48px;background:#2a2a4e;"></div>
-            <div>
-                <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px;
-                            color:#666;margin-bottom:4px;">Platform Status</div>
-                <div style="font-size:1em;font-weight:700;color:#27ae60;margin-top:4px;">
-                    <span style="font-size:0.7em;">●</span> Live &amp; Updated
+                            color:#666;margin-bottom:4px;">Pipeline Status</div>
+                <div style="font-size:1em;font-weight:700;color:{_status_color};margin-top:4px;">
+                    <span style="font-size:0.7em;">{_status_dot}</span> {_status_label}
                 </div>
-                <div style="font-size:0.78em;color:#888;margin-top:4px;">No API key required</div>
+                <div style="font-size:0.78em;color:#888;margin-top:4px;">
+                    {"Reports ready to search" if count > 0 else "Run pipeline to get started"}
+                </div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    if count == 0 and _SEARCH_AVAILABLE:
+        if st.button("Run All Sources — Index Reports", type="primary", key="home_pipeline"):
+            with st.spinner("Crawling all sources and indexing reports (15–30 min)..."):
+                try:
+                    from crawler.run_all import crawl_all
+                    from pipeline.ingest import run_ingest
+                    crawl_all(max_ahuri=500)
+                    run_ingest()
+                    st.success("All sources indexed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Pipeline error: {e}")
     st.divider()
 
     # ── Why I built this ─────────────────────────────────────────────────────
@@ -422,8 +522,8 @@ if page == "Home":
                 background:#1a1a2e;border:1px solid #2a2a4e;border-radius:10px;
                 margin:0 0 24px 0;overflow:hidden;">
         <div style="padding:14px 18px;border-right:1px solid #2a2a4e;text-align:center;">
-            <div style="font-size:1.6em;font-weight:800;color:#f6c90e;">5</div>
-            <div style="font-size:0.72em;text-transform:uppercase;letter-spacing:1px;color:#666;margin-top:2px;">Live dashboards</div>
+            <div style="font-size:1.6em;font-weight:800;color:#f6c90e;">12</div>
+            <div style="font-size:0.72em;text-transform:uppercase;letter-spacing:1px;color:#666;margin-top:2px;">Platform modules</div>
         </div>
         <div style="padding:14px 18px;border-right:1px solid #2a2a4e;text-align:center;">
             <div style="font-size:1.6em;font-weight:800;color:#fff;">681+</div>
@@ -603,12 +703,12 @@ if page == "Home":
         ), unsafe_allow_html=True)
 
     else:
-        st.info("Live data updates are refreshed monthly from ABS, AIHW, and Housing Australia releases.")
+        st.info("Live data not available. Run the pipeline — use Browse Reports to run the pipeline.")
 
     # ── What HIVE Does ────────────────────────────────────────────────────────
     st.markdown("""
     <div style="font-size:0.82em;text-transform:uppercase;letter-spacing:2px;
-                color:#999;font-weight:600;margin-bottom:16px;">What This Platform Does — 5 Dashboards</div>
+                color:#999;font-weight:600;margin-bottom:16px;">What This Platform Does — 12 Modules</div>
     """, unsafe_allow_html=True)
 
     _capabilities = [
@@ -647,9 +747,30 @@ if page == "Home":
             "body":  "Round-by-round breakdown of the $10B Housing Australia Future Fund — homes announced vs 30,000 target, state allocations, sector mix, bedroom mix, delivery pipeline, and funding gap analysis.",
             "new":   False,
         },
+        {
+            "nav":   "Ask Research",
+            "icon":  "🔍",
+            "title": "Research Synthesis",
+            "body":  "Ask any housing question in plain language. HIVE searches 681+ indexed reports from AHURI, AIHW, Treasury, ABS and more — returning a synthesised, cited answer in seconds. Export to Word.",
+            "new":   False,
+        },
+        {
+            "nav":   "Policy Impact",
+            "icon":  "📋",
+            "title": "Policy Impact Analysis",
+            "body":  "Select any major program — HAFF, NRAS, HomeBuilder, Nation Building — and get an evidence-based impact assessment grounded in independent research, not government self-reporting.",
+            "new":   False,
+        },
+        {
+            "nav":   "Outcomes",
+            "icon":  "🎯",
+            "title": "Policy Outcome Ledger",
+            "body":  "Every major federal housing investment tracked against what it promised: target, actual, status. The accountability layer — what was committed vs what was delivered, program by program.",
+            "new":   False,
+        },
     ]
 
-    cap_html = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:0;">'
+    cap_html = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:0;">'
     for cap in _capabilities:
         new_badge = (
             '<span style="font-size:0.68em;font-weight:700;color:#0f0f1a;'
@@ -683,38 +804,38 @@ if page == "Home":
         {
             "title": "CEO / Executive Director",
             "sub": "CHP or peak body",
-            "body": "Start with the <strong>Live Dashboard</strong> for current national numbers, then <strong>Population</strong> for the 10-year growth story and what it means for housing demand. <strong>HAFF</strong> shows what the government has committed and what's been delivered.",
-            "tabs": ["Live Dashboard", "Population", "HAFF", "Conditions"],
+            "body": "Start with the <strong>Live Dashboard</strong> for current national numbers, then <strong>Population</strong> for the 10-year growth story and what it means for housing demand. Use the <strong>Outcome Ledger</strong> to see what government investment has actually delivered. The <strong>Weekly Digest</strong> keeps your board briefed without manual effort.",
+            "tabs": ["Live Dashboard", "Population", "Outcomes", "Digest"],
         },
         {
             "title": "Policy & Advocacy Manager",
             "sub": "CHP, peak body, or government",
-            "body": "<strong>Population</strong> has six evidence-backed advocacy positions the sector needs. <strong>Conditions</strong> makes the case for grant indexation and maintenance investment. <strong>Demand & Supply</strong> shows the structural mismatch in hard numbers.",
-            "tabs": ["Population", "Conditions", "Demand & Supply", "HAFF"],
+            "body": "Use <strong>Ask Research</strong> for evidence on any topic. <strong>Population</strong> has the six advocacy positions the sector needs — each evidence-backed. <strong>Conditions</strong> makes the case for grant indexation and maintenance investment. <strong>Policy Impact</strong> builds the argument on any prior program.",
+            "tabs": ["Ask Research", "Population", "Conditions", "Policy Impact"],
         },
         {
             "title": "Development Manager",
             "sub": "Property and pipeline, CHP",
-            "body": "<strong>Demand & Supply</strong> is your demand case — waitlist demographics vs bedroom mix vs what's being built. <strong>Population</strong> shows projected demand by state to 2044. <strong>Conditions</strong> gives you the construction cost story and why HAFF grants have a funding gap. <strong>HAFF</strong> shows the pipeline you're competing in.",
+            "body": "<strong>Demand & Supply</strong> is your demand case — waitlist demographics vs bedroom mix vs what's being built. <strong>Population</strong> shows projected demand by state to 2041. <strong>Conditions</strong> gives you the construction cost story and why HAFF grants have a funding gap. <strong>HAFF</strong> shows the pipeline you're competing in.",
             "tabs": ["Demand & Supply", "Population", "Conditions", "HAFF"],
         },
         {
             "title": "Grants & Funding Officer",
             "sub": "CHP or community organisation",
-            "body": "<strong>Population</strong>'s state growth data gives you the forward demand story. <strong>Demand & Supply</strong> shows waitlist demographics by state and household type — the evidence for your bid. <strong>Live Dashboard</strong> has the latest homelessness and approval data.",
-            "tabs": ["Population", "Demand & Supply", "Live Dashboard", "Conditions"],
+            "body": "Use <strong>Ask Research</strong> to build the evidence base for any grant — waitlists, homelessness, family violence, specific demographics. <strong>Population</strong>'s state growth data gives you the forward demand story. Export to Word and paste directly into your bid.",
+            "tabs": ["Ask Research", "Population", "Demand & Supply", "Reports"],
         },
         {
             "title": "Impact Investor / Funder",
             "sub": "Super funds, banks, philanthropies",
-            "body": "<strong>HAFF</strong> shows what government committed vs delivered. <strong>Population</strong> shows the scale of unmet demand (32.5M Australians by 2041). <strong>Conditions</strong> shows why the $1B that built 3,226 homes in 2019 only builds 1,786 today — and why that makes the investment case stronger.",
-            "tabs": ["HAFF", "Population", "Conditions", "Demand & Supply"],
+            "body": "The <strong>Outcome Ledger</strong> shows the track record — what was promised vs delivered. <strong>Population</strong> shows the scale and duration of unmet demand (32.5M Australians by 2041). <strong>Conditions</strong> shows why the $1B that built 3,226 homes in 2019 only builds 1,786 today — and why that makes the investment case stronger, not weaker.",
+            "tabs": ["Outcomes", "Population", "Conditions", "Timeline"],
         },
         {
             "title": "Government Stakeholder",
             "sub": "State/federal housing departments",
-            "body": "<strong>Population</strong> shows the structural gap between projected demand and any credible supply trajectory. <strong>Conditions</strong> makes the asset renewal case. <strong>HAFF</strong> tracks fund performance round by round. <strong>Live Dashboard</strong> provides the latest approval and waitlist data.",
-            "tabs": ["Population", "Conditions", "HAFF", "Live Dashboard"],
+            "body": "Use <strong>Policy Impact</strong> to see what prior programs delivered before designing the next. <strong>Population</strong> shows the structural gap between projected demand and any credible supply trajectory. <strong>Conditions</strong> makes the asset renewal case. <strong>Ask Research</strong> surfaces what independent research recommends.",
+            "tabs": ["Policy Impact", "Population", "Conditions", "Ask Research"],
         },
     ]
 
@@ -731,13 +852,44 @@ if page == "Home":
     cards_html += "</div>"
     st.markdown(cards_html, unsafe_allow_html=True)
 
+    # ── Quick search ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Not Sure Where to Start? Search Anything")
+    st.markdown("Type a question, a policy name, a housing issue — HIVE will find what the research says.")
+
+    home_query = st.text_input(
+        "", placeholder="e.g. What does the research say about social housing waitlists in Victoria?",
+        label_visibility="collapsed"
+    )
+    if home_query.strip():
+        if count == 0:
+            st.warning("No reports indexed yet. Run the pipeline — go to Browse Reports to run the pipeline.")
+        elif not os.environ.get("ANTHROPIC_API_KEY"):
+            st.error("Add your ANTHROPIC_API_KEY to the .env file.")
+        else:
+            with st.spinner("Searching the evidence base..."):
+                _results = search(home_query, n_results=12)
+                _answer = synthesize(home_query, _results)
+            st.markdown("#### Answer")
+            st.markdown(_answer)
+            st.caption(f"Based on {len(_results)} sources · Switch to **Ask the Research** tab for filters and export")
+
     # ── Data sources ──────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### What Data Powers HIVE")
     st.markdown(
-        "Every dashboard in HIVE is built on live data from these authoritative government and research sources. "
-        "Every number is traceable to a specific publication."
+        "Every answer HIVE gives is grounded in real publications from these sources. "
+        "Nothing is made up. Every claim can be traced to a specific report."
     )
+
+    try:
+        from pipeline.ingest import get_collection as _gc
+        _c = _gc()
+        _total_chunks = _c.count()
+    except Exception:
+        _total_chunks = 0
+
+    _n_reports = len(META_FILE.read_text().splitlines()) if META_FILE.exists() else 0
 
     sources_data = [
         {"color": "#e74c3c", "name": "AHURI", "full": "Australian Housing and Urban Research Institute",
@@ -758,24 +910,24 @@ if page == "Home":
          "desc": "Community housing sector peak body publications and State of the Sector reports (where accessible)."},
     ]
 
-    st.markdown("""
+    st.markdown(f"""
     <div style="background:#1a1a2e;border-radius:10px;padding:20px 24px;margin-bottom:20px;
                 display:flex;gap:40px;flex-wrap:wrap;">
+        <div style="text-align:center;">
+            <div class="stat-highlight">{_n_reports:,}</div>
+            <div class="stat-label">Reports indexed</div>
+        </div>
+        <div style="text-align:center;">
+            <div class="stat-highlight">{_total_chunks:,}</div>
+            <div class="stat-label">Searchable chunks</div>
+        </div>
         <div style="text-align:center;">
             <div class="stat-highlight">8</div>
             <div class="stat-label">Data sources</div>
         </div>
         <div style="text-align:center;">
             <div class="stat-highlight">15+</div>
-            <div class="stat-label">Years of data</div>
-        </div>
-        <div style="text-align:center;">
-            <div class="stat-highlight">Monthly</div>
-            <div class="stat-label">ABS update cadence</div>
-        </div>
-        <div style="text-align:center;">
-            <div class="stat-highlight">2044</div>
-            <div class="stat-label">Projections to</div>
+            <div class="stat-label">Years of research</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -797,11 +949,13 @@ if page == "Home":
     st.markdown("""
     <div style="background:#1a1a2e;border:1px solid #2a2a4e;border-radius:8px;
                 padding:14px 20px;font-size:0.82em;color:#888;line-height:1.7;">
-    <strong style="color:#f6c90e;">How the data is kept current:</strong>
-    HIVE pulls from live government APIs and curated datasets — ABS building approvals update monthly,
-    AIHW homelessness data updates annually, and state housing registers publish quarterly.
-    Every data point in each dashboard is sourced, dated, and linked to its primary publication.
-    No data leaves your environment.
+    <strong style="color:#f6c90e;">How the data pipeline works:</strong>
+    HIVE's crawler automatically downloads PDFs and HTML pages from each source above.
+    Each document is split into ~400-word chunks and embedded using a local AI model.
+    When you search, HIVE finds the most relevant chunks semantically — not just by keyword —
+    then sends them to Claude to synthesise a coherent, cited answer.
+    The pipeline runs on your machine. No data leaves your environment except the Claude API call.
+    Re-run the pipeline at any time from Browse Reports to pick up new publications.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1214,6 +1368,405 @@ if page == "HAFF Investment Tracker":
 
 
 # ── Ask the Research ──────────────────────────────────────────────────────────
+
+if page == "Ask the Research":
+    st.header("Ask the Research")
+    st.caption("Search 15 years of AHURI reports and get a synthesised, cited answer.")
+    if not _SEARCH_AVAILABLE:
+        st.info("This feature requires the full local installation (ChromaDB + sentence-transformers). It is not available on the cloud version. Contact Sunny Kim for access to the local deployment.", icon="ℹ️")
+        st.stop()
+
+    query = st.text_area(
+        "Your question",
+        placeholder=(
+            "e.g. What does the research say about community housing waitlist trends in Australia?\n"
+            "e.g. How effective has NRAS been at increasing affordable rental supply?\n"
+            "e.g. What are the main barriers to housing supply in Australian cities?"
+        ),
+        height=100,
+    )
+
+    with st.expander("Search filters", expanded=False):
+        _fc1, _fc2 = st.columns(2)
+        with _fc1:
+            year_range = st.slider("Year range", 2005, 2025, (2005, 2025))
+        with _fc2:
+            n_sources = st.slider("Sources to retrieve", 5, 25, 15)
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        search_btn = st.button("Search & Analyse", type="primary", use_container_width=True)
+
+    if search_btn and query.strip():
+        if count == 0:
+            st.warning("No reports indexed yet. Use Browse Reports → Run Pipeline to get started.")
+        elif not os.environ.get("ANTHROPIC_API_KEY"):
+            st.error("Set ANTHROPIC_API_KEY in your .env file.")
+        else:
+            with st.spinner("Searching reports and synthesising answer..."):
+                results = search(
+                    query,
+                    n_results=n_sources,
+                    year_min=year_range[0],
+                    year_max=year_range[1],
+                )
+                answer = synthesize(query, results)
+
+            st.subheader("Synthesised Analysis")
+            st.markdown(answer)
+
+            # Export button
+            try:
+                doc_buf = build_research_doc(query, answer, results)
+                st.download_button(
+                    "Export to Word (.docx)",
+                    data=doc_buf,
+                    file_name=f"housing_research_{date.today().strftime('%Y%m%d')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            except Exception as e:
+                st.caption(f"Export unavailable: {e}")
+
+            st.subheader(f"Sources ({len(results)} retrieved)")
+            for i, r in enumerate(results, 1):
+                with st.expander(f"[{i}] {r['title']} ({r['year']}) — relevance: {r['relevance_score']}"):
+                    col_a, col_b = st.columns([2, 1])
+                    with col_a:
+                        st.markdown(f"**{r['report_type']}** · {r['source_agency']} · {r['authors']}")
+                        st.markdown(f"[View report]({r['source_url']})")
+                    with col_b:
+                        st.metric("Relevance", r['relevance_score'])
+                    st.divider()
+                    st.markdown(r["text"])
+
+
+# ── Policy Impact ─────────────────────────────────────────────────────────────
+
+if page == "Policy Impact":
+    st.header("Policy Impact Analyser")
+    st.caption("Select a major housing policy and see what the research says about its real-world impact.")
+    if not _SEARCH_AVAILABLE:
+        st.info("This feature requires the full local installation (ChromaDB + sentence-transformers). It is not available on the cloud version. Contact Sunny Kim for access to the local deployment.", icon="ℹ️")
+        st.stop()
+
+    policy_options = {
+        f"{p['year']} — {p['event']}": p for p in POLICY_TIMELINE
+    }
+
+    selected_label = st.selectbox("Select a policy/program", options=list(policy_options.keys()))
+    policy = policy_options[selected_label]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Year", policy["year"])
+    col2.metric("Investment", f"${policy['amount_bn']}B")
+    col3.metric("Type", policy["type"].replace("_", " ").title())
+
+    custom_query = st.text_input(
+        "Or enter a custom policy/program name",
+        placeholder="e.g. First Home Owner Grant",
+    )
+
+    if st.button("Analyse Impact", type="primary"):
+        use_policy = policy if not custom_query.strip() else {
+            "event": custom_query, "amount_bn": "Unknown", "year": "Unknown", "type": "custom"
+        }
+
+        if count == 0:
+            st.warning("No reports indexed yet.")
+        else:
+            with st.spinner("Retrieving evidence and analysing impact..."):
+                search_query = f"{use_policy['event']} housing policy impact outcomes results"
+                results = search(search_query, n_results=n_sources)
+                answer = synthesize_policy_impact(
+                    policy_name=use_policy["event"],
+                    funding_amount=f"${use_policy['amount_bn']}B" if use_policy['amount_bn'] != "Unknown" else "Unknown",
+                    year=use_policy["year"],
+                    chunks=results,
+                )
+
+            st.subheader("Impact Assessment")
+            st.markdown(answer)
+
+            try:
+                doc_buf = build_impact_doc(use_policy, answer, results)
+                st.download_button(
+                    "Export to Word (.docx)",
+                    data=doc_buf,
+                    file_name=f"impact_analysis_{date.today().strftime('%Y%m%d')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            except Exception as e:
+                st.caption(f"Export unavailable: {e}")
+
+            if results:
+                st.subheader("Evidence base")
+                years = [r["year"] for r in results if isinstance(r["year"], int)]
+                if years:
+                    fig = px.histogram(
+                        x=years, nbins=len(set(years)),
+                        labels={"x": "Publication Year", "y": "Chunks retrieved"},
+                        title="Distribution of evidence by year",
+                        color_discrete_sequence=["#3498db"],
+                    )
+                    fig.update_layout(
+                        plot_bgcolor="#1a1a2e", paper_bgcolor="#0f0f1a", font_color="#ffffff"
+                    )
+                    fig.update_xaxes(showgrid=True, gridcolor="#333")
+                    fig.update_yaxes(showgrid=True, gridcolor="#333")
+                    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── Outcome Ledger ────────────────────────────────────────────────────────────
+
+if page == "Outcome Ledger":
+    st.header("Policy Outcome Ledger")
+    st.caption("Investment vs. reality — what each major program promised and what it delivered.")
+    if not _SEARCH_AVAILABLE:
+        st.info("This feature requires the full local installation (ChromaDB + sentence-transformers). It is not available on the cloud version. Contact Sunny Kim for access to the local deployment.", icon="ℹ️")
+        st.stop()
+
+    programs = get_all_programs()
+
+    if not programs:
+        st.info("Ledger not seeded yet.")
+    else:
+        # Summary metrics
+        total_committed = sum(p["funding_committed_bn"] or 0 for p in programs)
+        total_drawn = sum(p["funding_drawn_bn"] or 0 for p in programs if p["funding_drawn_bn"])
+        active = sum(1 for p in programs if p["status"] == "Active")
+        st.markdown(f"""
+        <div style="display:flex; gap:24px; margin-bottom:16px;">
+            <div style="background:#1a1a2e;padding:16px 24px;border-radius:8px;border-left:4px solid #e74c3c;">
+                <div style="font-size:0.8em;color:#aaa;">Total Committed</div>
+                <div style="font-size:1.8em;font-weight:bold;">${total_committed:.1f}B</div>
+            </div>
+            <div style="background:#1a1a2e;padding:16px 24px;border-radius:8px;border-left:4px solid #27ae60;">
+                <div style="font-size:0.8em;color:#aaa;">Confirmed Drawn</div>
+                <div style="font-size:1.8em;font-weight:bold;">${total_drawn:.1f}B</div>
+            </div>
+            <div style="background:#1a1a2e;padding:16px 24px;border-radius:8px;border-left:4px solid #3498db;">
+                <div style="font-size:0.8em;color:#aaa;">Programs Tracked</div>
+                <div style="font-size:1.8em;font-weight:bold;">{len(programs)}</div>
+            </div>
+            <div style="background:#1a1a2e;padding:16px 24px;border-radius:8px;border-left:4px solid #f39c12;">
+                <div style="font-size:0.8em;color:#aaa;">Active Now</div>
+                <div style="font-size:1.8em;font-weight:bold;">{active}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Summary table
+        rows = []
+        for p in programs:
+            rows.append({
+                "Program": p["short_name"] or p["name"][:40],
+                "Year": p["announced_year"],
+                "Committed $B": p["funding_committed_bn"],
+                "Type": p["program_type"],
+                "Status": p["status"],
+                "Scope": p["geographic_scope"],
+            })
+        df_ledger = pd.DataFrame(rows)
+
+        # Bubble chart: year vs committed funding
+        fig = px.scatter(
+            df_ledger, x="Year", y="Committed $B",
+            size="Committed $B", color="Type",
+            hover_name="Program", text="Program",
+            title="Housing Programs by Year and Investment Scale",
+            height=420,
+        )
+        fig.update_traces(textposition="top center", textfont_size=9)
+        fig.update_layout(
+            showlegend=True,
+            plot_bgcolor="#1a1a2e",
+            paper_bgcolor="#0f0f1a",
+            font_color="#ffffff",
+            legend=dict(bgcolor="#1a1a2e", bordercolor="#444"),
+        )
+        fig.update_xaxes(showgrid=True, gridcolor="#333", zerolinecolor="#444")
+        fig.update_yaxes(showgrid=True, gridcolor="#333", zerolinecolor="#444")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Program Details")
+        selected_name = st.selectbox(
+            "Select a program to drill down",
+            options=[p["name"] for p in programs]
+        )
+        selected_program = next(p for p in programs if p["name"] == selected_name)
+        program_id = selected_program["id"]
+        detail = get_program(program_id)
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown(f"**{selected_program['name']}**")
+            desc = selected_program.get("description", "")
+            import html as _html
+            st.markdown(
+                f'<p style="font-size:0.88em;color:#aaa;line-height:1.7;margin-top:4px;">'
+                f'{_html.escape(desc)}</p>',
+                unsafe_allow_html=True
+            )
+        with col2:
+            st.metric("Committed", f"${selected_program['funding_committed_bn']}B")
+            drawn = selected_program.get("funding_drawn_bn")
+            if drawn:
+                st.metric("Drawn", f"${drawn}B",
+                          delta=f"${selected_program['funding_committed_bn']-drawn:.1f}B unspent")
+
+        # Targets vs Outcomes comparison
+        targets = detail["targets"]
+        outcomes = detail["outcomes"]
+
+        if targets or outcomes:
+            st.subheader("Targets vs. Actual Outcomes")
+            for t in targets:
+                matching = [o for o in outcomes if t["metric"].lower() in o["metric"].lower()
+                            or o["metric"].lower() in t["metric"].lower()]
+
+                target_val = f"{t['target_value']:,.0f} {t.get('target_unit','')}"
+
+                if matching:
+                    o = matching[0]
+                    actual = o["actual_value"]
+                    target_num = t["target_value"]
+                    pct = ((actual - target_num) / target_num * 100) if target_num else 0
+                    actual_val = f"{actual:,.0f} {o.get('actual_unit','')}"
+                    pct_color = "#27ae60" if pct >= 0 else "#e74c3c"
+                    pct_label = f'<span style="color:{pct_color};font-size:0.78em;margin-left:6px;">{pct:+.0f}% vs target</span>'
+                else:
+                    actual_val = "Not yet recorded"
+                    pct_label = ""
+
+                st.markdown(f"""
+                <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;
+                            align-items:center;padding:10px 0;border-bottom:1px solid #2a2a3e;">
+                    <div>
+                        <div style="font-weight:600;font-size:0.9em;color:#fff;">{t['metric']}</div>
+                        <div style="font-size:0.75em;color:#666;margin-top:2px;">
+                            Target year: {t.get('target_year','n/a')} · {t.get('source','')}
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.72em;color:#888;text-transform:uppercase;
+                                    letter-spacing:0.5px;margin-bottom:2px;">Target</div>
+                        <div style="font-size:0.95em;color:#ccc;font-weight:500;">{target_val}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:0.72em;color:#888;text-transform:uppercase;
+                                    letter-spacing:0.5px;margin-bottom:2px;">Actual</div>
+                        <div style="font-size:0.95em;color:#fff;font-weight:500;">
+                            {actual_val}{pct_label}
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        # Additional outcomes not tied to a target
+        extra = [o for o in outcomes if not any(
+            t["metric"].lower() in o["metric"].lower() for t in targets
+        )]
+        if extra:
+            st.subheader("Additional Findings")
+            for o in extra:
+                confidence_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(o["confidence"], "⚪")
+                val = o['actual_value']
+                val_str = f"{val:,.0f}" if val is not None else "N/A"
+                with st.expander(f"{confidence_color} {o['metric']} — {val_str} {o.get('actual_unit','')} ({o.get('measurement_year','')})"):
+                    st.caption(f"Source: {o.get('source_report','')}")
+                    if o.get("notes"):
+                        st.markdown(o["notes"])
+
+        # Claude extraction
+        st.subheader("Extract from Research")
+        st.caption("Use Claude to pull additional evidence from indexed reports.")
+
+        _today = date.today().isoformat()
+        _already_run_today = any(
+            ins.get("extracted_at", "")[:10] == _today
+            for ins in detail.get("insights", [])
+        )
+
+        if _already_run_today:
+            st.success(f"Extraction already run today ({_today}). Results are current.", icon="✅")
+            st.button("Run Research Extraction", type="primary", disabled=True)
+        else:
+            if st.button("Run Research Extraction", type="primary"):
+                if count == 0:
+                    st.warning("No reports indexed yet.")
+                elif not os.environ.get("ANTHROPIC_API_KEY"):
+                    st.error("Set ANTHROPIC_API_KEY in .env")
+                else:
+                    with st.spinner("Retrieving research and extracting outcomes..."):
+                        try:
+                            from ledger.extractor import extract_outcomes_for_program
+                            result = extract_outcomes_for_program(program_id, search)
+                            st.success("Extraction complete!")
+                            if result.get("key_findings"):
+                                st.markdown(result["key_findings"])
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Extraction failed: {e}")
+
+        # Existing insights
+        if detail["insights"]:
+            st.subheader("Previous Research Extractions")
+            for ins in detail["insights"]:
+                with st.expander(f"Extracted: {ins['extracted_at'][:10]}"):
+                    raw = ins["content"]
+                    # Try to parse as JSON and render cleanly
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        key_findings = parsed.get("key_findings", "")
+                        new_outcomes = parsed.get("new_outcomes", [])
+
+                        if key_findings:
+                            st.markdown("**Key Findings**")
+                            st.markdown(
+                                f'<p style="font-size:0.88em;color:#ccc;line-height:1.8;">'
+                                f'{key_findings}</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                        if new_outcomes:
+                            st.markdown("**Extracted Data Points**")
+                            for item in new_outcomes:
+                                metric = item.get("metric", "")
+                                val = item.get("actual_value")
+                                unit = item.get("actual_unit", "")
+                                year = item.get("measurement_year", "")
+                                conf = item.get("confidence", "")
+                                source = item.get("source_report", "")
+                                notes = item.get("notes", "")
+                                val_str = f"{val:,.0f}" if isinstance(val, (int, float)) and val is not None else (str(val) if val else "—")
+                                conf_color = {"High": "#27ae60", "Medium": "#f39c12", "Low": "#e74c3c"}.get(conf, "#888")
+                                st.markdown(f"""
+                                <div style="background:#1a1a2e;border-radius:6px;padding:10px 14px;
+                                            margin:6px 0;border-left:3px solid {conf_color};">
+                                    <div style="font-size:0.85em;font-weight:600;color:#fff;">{metric}</div>
+                                    <div style="font-size:0.88em;color:#f6c90e;margin:2px 0;">
+                                        {val_str} {unit}
+                                        <span style="color:#888;font-size:0.85em;margin-left:8px;">{year}</span>
+                                        <span style="color:{conf_color};font-size:0.75em;margin-left:8px;
+                                              text-transform:uppercase;letter-spacing:1px;">{conf} confidence</span>
+                                    </div>
+                                    <div style="font-size:0.78em;color:#666;">Source: {source}</div>
+                                    {f'<div style="font-size:0.78em;color:#999;margin-top:4px;">{notes}</div>' if notes else ''}
+                                </div>
+                                """, unsafe_allow_html=True)
+                    except Exception:
+                        # Fallback: just show as text
+                        st.text(raw)
+
+        # Evidence links
+        if detail["evidence"]:
+            st.subheader(f"Research Evidence ({len(detail['evidence'])} sources linked)")
+            for ev in detail["evidence"][:5]:
+                with st.expander(f"{ev.get('report_title','Unknown')} ({ev.get('report_year','')}) — score: {ev.get('relevance_score',0):.2f}"):
+                    st.markdown(ev.get("excerpt", ""))
+
+
+# ── Live Dashboard ────────────────────────────────────────────────────────────
 
 if page == "Live Dashboard":
     st.header("Live Housing Dashboard")
@@ -3308,3 +3861,410 @@ if page == "Housing Conditions & Costs":
         },
     ])
 
+
+# ── Weekly Digest ─────────────────────────────────────────────────────────────
+
+if page == "Weekly Digest":
+    st.header("Weekly Intelligence Digest")
+    st.caption("Auto-generated briefing combining live data + new research — ready to email.")
+
+    # ── Live Data Snapshot ──────────────────────────────────────────────────────
+    st.markdown("### Live Data Snapshot")
+    st.caption(f"Current figures feeding into the digest — as of {date.today().strftime('%d %B %Y')}")
+
+    try:
+        from live.abs_feed import fetch_housing_indicators
+        from live.shs_feed import get_shs_summary
+        from live.state_analysis import get_state_summary, get_all_states_latest
+        from live.haff_data import get_haff_summary, HAFF_ROUNDS as _hr
+
+        _ba = fetch_housing_indicators()
+        _shs = get_shs_summary()
+        _wa = get_state_summary("WA")
+        _haff = get_haff_summary()
+
+        _gap = _ba.get("gap_to_accord_target", 0) or 0
+        _run = _ba.get("annual_run_rate", 0) or 0
+        _target = 240000
+        _pct_t = round((_run / _target) * 100) if _target else 0
+
+        st.markdown("""<div style="font-size:0.72em;text-transform:uppercase;letter-spacing:2px;
+            color:#888;border-bottom:1px solid #2a2a3e;padding-bottom:6px;margin-bottom:10px;">
+            National Supply</div>""", unsafe_allow_html=True)
+        kc1, kc2, kc3, kc4 = st.columns(4)
+        with kc1:
+            st.metric("Monthly Approvals", f"{_ba.get('latest_total', 0):,}",
+                      delta=f"{_ba.get('yoy_change_pct', 0):+.1f}% YoY" if _ba.get('yoy_change_pct') else None)
+        with kc2:
+            st.metric("Annual Run Rate", f"{_run:,}",
+                      delta=f"{_pct_t}% of 240k target")
+        with kc3:
+            st.metric("Accord Gap", f"{abs(_gap):,}/yr",
+                      delta="below 240k target", delta_color="inverse")
+        with kc4:
+            st.metric("SHS Unassisted", f"{_shs.get('unassisted_requests', 0):,}",
+                      delta=f"{_shs.get('unassisted_change_yoy', 0):+.1f}% YoY" if _shs.get('unassisted_change_yoy') else None,
+                      delta_color="inverse")
+
+        # All-states spotlight — load each state's full summary
+        st.markdown("""<div style="font-size:0.72em;text-transform:uppercase;letter-spacing:2px;
+            color:#888;border-top:1px solid #2a2a3e;border-bottom:1px solid #2a2a3e;
+            padding:10px 0 6px 0;margin:20px 0 10px 0;">
+            State Demand &amp; Supply Spotlight — All States</div>""", unsafe_allow_html=True)
+        _all_state_codes = ["NSW", "VIC", "QLD", "WA", "SA"]
+        _state_summaries = []
+        for _sc in _all_state_codes:
+            try:
+                _ss = get_state_summary(_sc)
+                _state_summaries.append(_ss)
+            except Exception:
+                pass
+
+        if _state_summaries:
+            _spotlight_df = pd.DataFrame([{
+                "State": s["state"],
+                "Waitlist": f"{s.get('latest_waitlist', 0):,}",
+                "YoY Change": f"{s.get('wl_change_yoy', 0):+.1f}%" if s.get("wl_change_yoy") else "—",
+                "Total Approvals": f"{s.get('latest_approvals_total', 0):,}",
+                "Social/Aff Built": f"{s.get('accessible_total', 0):,}",
+                "% Accessible": f"{s.get('accessible_pct_of_approvals', 0)}%",
+                "Yrs to Clear": str(s.get("years_to_clear_waitlist", "—")),
+                "Social Stock": f"{s.get('social_housing_stock', 0):,}",
+            } for s in _state_summaries])
+
+            st.dataframe(
+                _spotlight_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "State": st.column_config.TextColumn(width="small"),
+                    "Waitlist": st.column_config.TextColumn(width="small"),
+                    "YoY Change": st.column_config.TextColumn(width="small"),
+                    "Total Approvals": st.column_config.TextColumn(width="medium"),
+                    "Social/Aff Built": st.column_config.TextColumn(width="medium"),
+                    "% Accessible": st.column_config.TextColumn(width="small"),
+                    "Yrs to Clear": st.column_config.TextColumn(width="small"),
+                    "Social Stock": st.column_config.TextColumn(width="medium"),
+                },
+            )
+
+            # Key metrics for each state as columns
+            _cols = st.columns(len(_state_summaries))
+            for _i, (_col, _ss) in enumerate(zip(_cols, _state_summaries)):
+                with _col:
+                    _ytc = _ss.get("years_to_clear_waitlist", "—")
+                    _acc_pct = _ss.get("accessible_pct_of_approvals", 0)
+                    _wl = _ss.get("latest_waitlist", 0)
+                    _yoy = _ss.get("wl_change_yoy")
+                    st.markdown(f"**{_ss['state']}**")
+                    st.metric("Waitlist", f"{_wl:,}",
+                              delta=f"{_yoy:+.1f}% YoY" if _yoy else None,
+                              delta_color="inverse")
+                    st.metric("Yrs to Clear", str(_ytc), delta_color="off")
+                    st.metric("% Accessible", f"{_acc_pct}%", delta_color="off")
+
+        st.markdown("""<div style="font-size:0.72em;text-transform:uppercase;letter-spacing:2px;
+            color:#888;border-top:1px solid #2a2a3e;border-bottom:1px solid #2a2a3e;
+            padding:10px 0 6px 0;margin:20px 0 10px 0;">
+            HAFF Investment — All Rounds</div>""", unsafe_allow_html=True)
+        kh1, kh2, kh3, kh4 = st.columns(4)
+        with kh1:
+            st.metric("Total Homes Announced", f"{_haff.get('total_homes', 0):,}",
+                      delta=f"{_haff.get('pct_of_5yr_target', 0)}% of 30k target")
+        with kh2:
+            st.metric("Grants Committed", f"${_haff.get('total_grants_m', 0):,.0f}M")
+        with kh3:
+            st.metric("Total Projects", f"{_haff.get('total_projects', 0):,}")
+        with kh4:
+            r3 = _hr.get("Round 3", {})
+            st.metric("Round 3 Status", r3.get("status", "—"),
+                      delta=f"{r3.get('total_homes', 0):,} homes")
+
+    except Exception as _e:
+        st.warning(f"Could not load live stats: {_e}")
+
+    st.divider()
+
+    # ── Generate & Send ────────────────────────────────────────────────────────
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        st.subheader("Email Configuration")
+        st.info(
+            "Add these to your **.env** file to enable email sending:\n\n"
+            "```\nDIGEST_FROM_EMAIL=you@gmail.com\n"
+            "DIGEST_APP_PASSWORD=your_app_password\n"
+            "DIGEST_TO_EMAILS=colleague1@org.com,colleague2@org.com\n```\n\n"
+            "Get an App Password: Google Account → Security → 2-Step Verification → App Passwords"
+        )
+        recipients_input = st.text_input(
+            "Send to (comma-separated emails)",
+            placeholder="team@yourorg.com.au, ceo@yourorg.com.au"
+        )
+
+    with col_b:
+        st.subheader("Generate")
+        st.caption("Takes ~30 seconds to compile data and write narrative.")
+        gen_btn = st.button("Generate Digest", type="primary", use_container_width=True)
+        send_btn = st.button("Generate & Send", use_container_width=True)
+
+    if gen_btn or send_btn:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            st.error("Set ANTHROPIC_API_KEY in .env")
+        else:
+            with st.spinner("Compiling live data and generating digest..."):
+                try:
+                    from digest.digest import generate_digest
+                    from digest.emailer import send_digest, save_digest_html
+
+                    html_body, narrative, stats = generate_digest()
+                    digest_path = save_digest_html(html_body)
+
+                    st.success("Digest generated!")
+
+                    # Narrative preview
+                    st.subheader("Claude's Analysis")
+                    st.markdown(narrative)
+
+                    # Download
+                    st.download_button(
+                        "Download as HTML",
+                        data=html_body,
+                        file_name=f"housing_digest_{date.today().strftime('%Y%m%d')}.html",
+                        mime="text/html"
+                    )
+
+                    # Send if requested
+                    if send_btn:
+                        recipients = [e.strip() for e in recipients_input.split(",") if e.strip()]
+                        ok, msg = send_digest(html_body, narrative, recipients or None)
+                        if ok:
+                            st.success(f"Sent! {msg}")
+                        else:
+                            st.error(f"Send failed: {msg}")
+
+                except Exception as e:
+                    import traceback
+                    st.error(f"Digest error: {e}")
+                    st.code(traceback.format_exc())
+
+    # Show last saved digest as full HTML preview
+    digest_file = Path("data/latest_digest.html")
+    if digest_file.exists():
+        st.divider()
+        st.subheader("Last Generated Digest (Full Preview)")
+        with open(digest_file) as f:
+            st.components.v1.html(f.read(), height=800, scrolling=True)
+
+
+# ── Policy Timeline ───────────────────────────────────────────────────────────
+
+if page == "Policy Timeline":
+    st.header("Australian Housing Policy Timeline (2008–2024)")
+    st.caption("Major federal government housing investments and their scale.")
+
+    df = pd.DataFrame(POLICY_TIMELINE)
+    df["label"] = df["event"].str[:60] + "..."
+
+    color_map = {
+        "construction": "#2196F3",
+        "public_housing": "#4CAF50",
+        "affordable_rental": "#FF9800",
+        "homeownership": "#9C27B0",
+        "financing": "#00BCD4",
+        "agreement": "#795548",
+        "social_housing": "#F44336",
+        "supply": "#607D8B",
+    }
+    df["color"] = df["type"].map(color_map).fillna("#999")
+
+    fig = go.Figure()
+    for _, row in df.iterrows():
+        fig.add_trace(go.Scatter(
+            x=[row["year"]], y=[row["amount_bn"]],
+            mode="markers+text",
+            marker=dict(size=max(10, row["amount_bn"] * 3), color=row["color"], opacity=0.8),
+            text=[f"${row['amount_bn']}B"],
+            textposition="top center",
+            name=row["type"].replace("_", " ").title(),
+            hovertext=row["event"],
+            hoverinfo="text+x+y",
+        ))
+
+    fig.update_layout(
+        title="Federal Housing Investment by Year (bubble size = $ billion)",
+        xaxis_title="Year",
+        yaxis_title="Investment ($B)",
+        height=500,
+        showlegend=False,
+        plot_bgcolor="#1a1a2e",
+        paper_bgcolor="#0f0f1a",
+        font_color="#ffffff",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#333", zerolinecolor="#444")
+    fig.update_yaxes(showgrid=True, gridcolor="#333", zerolinecolor="#444")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        df[["year", "event", "amount_bn", "type"]].rename(columns={
+            "year": "Year", "event": "Policy/Program", "amount_bn": "Investment ($B)", "type": "Type"
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ── Browse Reports ────────────────────────────────────────────────────────────
+
+if page == "Browse Reports":
+    st.header("Browse Indexed Reports")
+    if not _SEARCH_AVAILABLE:
+        st.info("This feature requires the full local installation (ChromaDB + sentence-transformers). It is not available on the cloud version. Contact Sunny Kim for access to the local deployment.", icon="ℹ️")
+        st.stop()
+
+    # ── Data Pipeline (moved from sidebar) ────────────────────────────────────
+    with st.expander("Data Pipeline — download & index all reports", expanded=not META_FILE.exists()):
+        st.caption("Downloads and indexes all housing research reports. Run once to get started — takes 15–30 minutes.")
+        _pip_col1, _pip_col2 = st.columns([1, 3])
+        with _pip_col1:
+            if st.button("Run All Sources", type="primary", use_container_width=True):
+                with st.spinner("Crawling all sources and indexing reports (15–30 min)..."):
+                    try:
+                        from crawler.run_all import crawl_all
+                        from pipeline.ingest import run_ingest
+                        crawl_all(max_ahuri=500)
+                        run_ingest()
+                        st.success("All sources indexed! You're ready to go.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Pipeline error: {e}")
+        with _pip_col2:
+            if count > 0:
+                st.success(f"{count:,} chunks indexed across {n_reports} reports. Pipeline is up to date.", icon="✅")
+            else:
+                st.warning("No reports indexed yet. Click Run All Sources to get started.")
+
+    if not META_FILE.exists():
+        st.info("No reports indexed yet. Run the pipeline above.")
+    else:
+        raw_reports = []
+        seen_urls = set()
+        for line in META_FILE.read_text().splitlines():
+            try:
+                import json
+                r = json.loads(line)
+                url = r.get("url", "")
+                if url and url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                raw_reports.append(r)
+            except Exception:
+                pass
+
+        reports = []
+        for r in raw_reports:
+            url = r.get("url", "")
+            # Direct PDF links from agency sites frequently go stale — flag them
+            link_likely_dead = url.lower().endswith(".pdf") and r.get("source") in ("DSS", "Treasury", "AIHW")
+            reports.append({
+                "Title": r.get("title", ""),
+                "Year": r.get("year", ""),
+                "Type": r.get("report_type", ""),
+                "Agency": r.get("source", ""),
+                "Link": "" if link_likely_dead else url,
+                "PDF downloaded": "Yes" if r.get("pdf_path") and Path(r["pdf_path"]).exists() else "No",
+                "_pdf_path": r.get("pdf_path", ""),
+                "_dead_link": link_likely_dead,
+            })
+
+        df_reports = pd.DataFrame(reports)
+        if not df_reports.empty:
+            # Filters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                types = ["All"] + sorted(df_reports["Type"].dropna().unique().tolist())
+                selected_type = st.selectbox("Report type", types)
+            with col2:
+                years = ["All"] + sorted(
+                    [y for y in df_reports["Year"].dropna().unique() if isinstance(y, int)],
+                    reverse=True
+                )
+                selected_year = st.selectbox("Year", years)
+            with col3:
+                search_q = st.text_input("Search title", placeholder="e.g. waitlist, HAFF, WA...")
+
+            filtered = df_reports.copy()
+            if selected_type != "All":
+                filtered = filtered[filtered["Type"] == selected_type]
+            if selected_year != "All":
+                filtered = filtered[filtered["Year"] == selected_year]
+            if search_q:
+                filtered = filtered[filtered["Title"].str.contains(search_q, case=False, na=False)]
+
+            st.caption(f"Showing {len(filtered)} of {len(df_reports)} reports")
+
+            # Table with clickable link column
+            display_df = filtered.drop(columns=["_pdf_path", "_dead_link"])
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Title": st.column_config.TextColumn("Title", width="large"),
+                    "Year": st.column_config.NumberColumn("Year", format="%d", width="small"),
+                    "Type": st.column_config.TextColumn("Type", width="small"),
+                    "Agency": st.column_config.TextColumn("Agency", width="small"),
+                    "Link": st.column_config.LinkColumn("Link", display_text="Open", width="small"),
+                    "PDF downloaded": st.column_config.TextColumn("PDF", width="small"),
+                },
+            )
+            dead = filtered["_dead_link"].sum()
+            if dead:
+                st.caption(f"⚠️ {dead} records have no link — the original agency URL was a direct PDF path that may have moved. Use the PDF download below if available.")
+
+            # PDF downloads for filtered results that have a local file
+            pdfs = [(row["Title"], row["_pdf_path"])
+                    for _, row in filtered.iterrows()
+                    if row["_pdf_path"] and Path(row["_pdf_path"]).exists()]
+
+            if pdfs:
+                st.markdown(f"**{len(pdfs)} PDFs available to download**")
+                pdf_cols = st.columns(3)
+                for i, (title, pdf_path) in enumerate(pdfs[:30]):
+                    with pdf_cols[i % 3]:
+                        with open(pdf_path, "rb") as f:
+                            st.download_button(
+                                label=title[:55] + ("…" if len(title) > 55 else ""),
+                                data=f.read(),
+                                file_name=Path(pdf_path).name,
+                                mime="application/pdf",
+                                key=f"pdf_{i}",
+                                use_container_width=True,
+                            )
+        else:
+            st.info("No report metadata found.")
+
+# ── Footer (every page) ───────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div class="hive-footer">
+        🐝 HIVE Intelligence — Research &amp; Policy Analysis &nbsp;|&nbsp;
+        Platform by <a href="https://www.linkedin.com/in/sunny-kim-58a780100/" target="_blank">Sunny Kim</a>,
+        Housing Data Lead
+        <br><br>
+        <span style="font-size:0.92em;color:#444;line-height:1.8;">
+        All analysis, data synthesis, and visualisations produced by this platform are sourced from
+        publicly available government and research publications — including the Australian Bureau of Statistics,
+        AIHW, AHURI, Housing Australia, Treasury, and the Productivity Commission.
+        When using findings from HIVE, please cite the underlying source directly
+        (e.g. <em>"ABS Building Approvals, Cat. 8731.0"</em> or <em>"AIHW SHS Annual Report 2023–24"</em>)
+        rather than the platform itself.<br>
+        Content from this platform is intended to support evidence-based decision-making within the
+        community housing sector. If you are considering sharing or publishing any analysis externally —
+        including in reports, media, grant applications, or public submissions — please reach out to
+        <a href="https://www.linkedin.com/in/sunny-kim-58a780100/" target="_blank">Sunny Kim</a>
+        before doing so, to ensure accuracy, appropriate context, and correct attribution.
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
