@@ -267,8 +267,13 @@ st.markdown("""
 <div style="display:flex;align-items:center;justify-content:space-between;
             padding:10px 0 8px 0;border-bottom:1px solid #2a2a3e;margin-bottom:10px;">
     <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-size:1.3em;font-weight:900;color:#f6c90e;letter-spacing:0.5px;">🐝 HIVE</span>
-        <span style="font-size:0.8em;color:#888;font-weight:400;">Housing Intelligence &amp; Evidence</span>
+        <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:1.4em;line-height:1;">🐝</span>
+            <span style="font-size:1.15em;font-weight:900;color:#f6c90e;
+                         letter-spacing:1.5px;text-transform:uppercase;">HIVE</span>
+        </div>
+        <span style="color:#2a2a4e;font-size:1.2em;">|</span>
+        <span style="font-size:0.82em;color:#aaa;font-weight:400;">Housing Intelligence &amp; Evidence</span>
     </div>
     <a href="https://www.linkedin.com/in/sunny-kim-58a780100/" target="_blank"
        style="display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit;">
